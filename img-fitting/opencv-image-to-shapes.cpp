@@ -10,7 +10,7 @@
 
 const int MIN_area = 100; // 最小面积阈值
 const int white = 240; // 白色阈值
-const float COLOR_THRESHOLD = 15.0f; // Lab颜色差异阈值
+const float COLOR_THRESHOLD = 20.0f; // Lab颜色差异阈值
 
 
 
@@ -21,19 +21,28 @@ typedef struct threshold {
     float T_ratio = 0.001;
     int T_o = 5;// 5 10 15 20 25
     int T_r = 5;// 5 10 15 20 25
-    float T_inlier = 0.2;//0.2 0.3 0.35 0.4 0.45 0.5 (the larger the more strict)
+    float T_inlier = 0.22;//0.2 0.3 0.35 0.4 0.45 0.5 (the larger the more strict)
     float T_angle = 2.0;// 
     float T_inlier_closed = 0.5;//0.5,0.6 0.7 0.8,0.9
-    float sharp_angle = 60;//35 40 45 50 55 60 (turn this up to detect smaller circles)
+    float sharp_angle = 40;//35 40 45 50 55 60 (turn this up to detect smaller circles)
 
 }T;
 vector<DetectedCircle> detectCircles(Mat inputImg, const Scalar& clusterColor) {
     T test_threshold; // 使用默认阈值
-    cv::imshow("contour", inputImg); cv::waitKey(500);
+    //cv::imshow("contour", inputImg); cv::waitKey(0);
     // 预处理图像：转为灰度图并高斯模糊
     Mat testImg;
-    cvtColor(inputImg, testImg, COLOR_BGR2GRAY);
-    GaussianBlur(testImg, testImg, Size(9, 9), 2, 2);
+    try{
+        //cvtColor(inputImg, testImg, COLOR_BGR2GRAY);
+        testImg = inputImg.clone();
+        GaussianBlur(testImg, testImg, Size(9, 9), 2, 2);
+    }
+    catch (cv::Exception& e) {
+        // 处理 OpenCV 异常
+        std::cerr << "OpenCV Exception occurred: " << e.msg << std::endl;
+        exit(1);
+    }
+    
 
     // EDPF边缘检测
     EDPF testEDPF(testImg);
@@ -144,11 +153,16 @@ inline float deltaE(const Vec3b& a, const Vec3b& b) {
 }
 
 // 洪水填充分割
-Mat floodFillSegmentation(Mat& image) {
+vector<floodedRegion> floodFillSegmentation(Mat& image) {
     Mat lab;
     cvtColor(image, lab, COLOR_BGR2Lab);
-    Mat processed = image.clone();
     Mat visited(image.size(), CV_8UC1, Scalar(0));
+    Mat output = image.clone();
+    int regionID = 1;
+
+    // 存储所有分割区域
+    vector<floodedRegion> allRegions;
+    vector<Scalar> regionColors;
 
     for (int y = 0; y < lab.rows; ++y) {
         for (int x = 0; x < lab.cols; ++x) {
@@ -165,6 +179,7 @@ Mat floodFillSegmentation(Mat& image) {
                     q.pop();
                     region.push_back(p);
 
+                    // 8邻域扩展
                     for (int dy = -1; dy <= 1; ++dy) {
                         for (int dx = -1; dx <= 1; ++dx) {
                             int ny = p.y + dy;
@@ -179,6 +194,7 @@ Mat floodFillSegmentation(Mat& image) {
                         }
                     }
                 }
+
 
                 // 计算主要颜色
                 vector<Vec3b> colors;
@@ -205,11 +221,68 @@ Mat floodFillSegmentation(Mat& image) {
 
                 // 填充主色
                 for (auto& pt : region)
-                    processed.at<Vec3b>(pt) = dominant;
+                    image.at<Vec3b>(pt) = dominant;
+                allRegions.push_back({ region, dominant });
             }
         }
     }
-    return processed;
+    return allRegions;
+}
+
+//孔洞填充
+std::vector<Point> fillHoles(const std::vector<Point>& points) {
+    if (points.empty()) {
+        return {};
+    }
+
+    // 计算点集的边界
+    int minX = points[0].x;
+    int maxX = points[0].x;
+    int minY = points[0].y;
+    int maxY = points[0].y;
+
+    for (const auto& pt : points) {
+        minX = std::min(minX, pt.x);
+        maxX = std::max(maxX, pt.x);
+        minY = std::min(minY, pt.y);
+        maxY = std::max(maxY, pt.y);
+    }
+
+    // 创建二值图像
+    int width = maxX - minX + 1;
+    int height = maxY - minY + 1;
+    if (width <= 0 || height <= 0) return {};
+
+    Mat img = Mat::zeros(height, width, CV_8UC1);
+    for (const auto& pt : points) {
+        int x = pt.x - minX;
+        int y = pt.y - minY;
+        if (x >= 0 && x < width && y >= 0 && y < height) {
+            img.at<uchar>(y, x) = 255;
+        }
+    }
+
+    // 孔洞填充处理
+    Mat mask;
+    copyMakeBorder(img, mask, 1, 1, 1, 1, BORDER_CONSTANT, 0);
+    floodFill(mask, Point(0, 0), Scalar(255));
+    Mat maskRoi = mask(Rect(1, 1, img.cols, img.rows));
+
+    Mat holes;
+    bitwise_not(maskRoi, holes);
+    Mat filledImg = img | holes;
+
+    // 提取填充后的点集
+    std::vector<Point> result;
+    for (int y = 0; y < filledImg.rows; ++y) {
+        for (int x = 0; x < filledImg.cols; ++x) {
+            if (filledImg.at<uchar>(y, x) == 255) {
+                result.emplace_back(x + minX, y + minY);
+            }
+        }
+    }
+
+    return result;
 }
 
 //拟合
@@ -222,36 +295,26 @@ vector<Region*> fiting(String path) {
     //resize(display, display, Size(2000, 2000));
 
     //imshow("Fitting Process", display);
-
-    // 颜色聚类部分：
-    Mat processed = floodFillSegmentation(image);
-
-    // 提取唯一颜色
-    vector<Scalar> colors;
-    for (int y = 0; y < processed.rows; ++y) {
-        for (int x = 0; x < processed.cols; ++x) {
-            Vec3b c = processed.at<Vec3b>(y, x);
-            if (c[0] < white || c[1] < white || c[2] < white) {
-                Scalar color(c[0], c[1], c[2]);
-                if (find(colors.begin(), colors.end(), color) == colors.end())
-                    colors.push_back(color);
-            }
-        }
-    }
-
     vector<Region*> allRegions;
-
-    for (Scalar clusterColor : colors) {
-        //if (clusterColor[0] >= white && clusterColor[1] >= white && clusterColor[2] >= white)continue;
-        // 生成颜色掩膜
-        Mat colorMask;
-        inRange(processed, clusterColor, clusterColor, colorMask);
+    // 颜色聚类部分：
+    vector<floodedRegion> Regions = floodFillSegmentation(image);
+    imshow("image", image); cv::waitKey(1000);
+    // 为每个独立连通区域生成唯一掩膜
+    for (floodedRegion i:Regions) {
+        // 创建区域掩膜
+        Mat mask = Mat::zeros(image.size(), CV_8UC1);
+        vector<Point> filled = fillHoles(i.region);
+        for (auto& pt : filled) {
+            mask.at<uchar>(pt) = 255;
+        }
+        
+        //cv::imshow("mask", mask); cv::waitKey(0);
+        Scalar clusterColor = i.color;
+        if (clusterColor[0] >= white && clusterColor[1] >= white && clusterColor[2] >= white)clusterColor[0] = clusterColor[1]= clusterColor[2]=255;
         
         
         // 第一阶段：处理圆形
-        Mat regionImage;
-        image.copyTo(regionImage, colorMask);
-        vector<DetectedCircle> circles = detectCircles(regionImage, clusterColor);
+        vector<DetectedCircle> circles = detectCircles(mask, clusterColor);
         
         // 处理检测到的圆形
         for (auto& c : circles) {
@@ -264,7 +327,7 @@ vector<Region*> fiting(String path) {
         }
         // 第二阶段：处理多边形
         vector<vector<Point>> contours;
-        findContours(colorMask, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+        cv::findContours(mask, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
         for (auto& contour : contours) {
             if (contourArea(contour) < MIN_area) continue;
@@ -329,10 +392,10 @@ vector<Region*> fiting(String path) {
         }
         else {
             fillPoly(display, { reg->contour }, reg->color);
-        }//imshow("Fitting Process", display); cv::waitKey(0);
+        }imshow("Fitting Process", display); cv::waitKey(500);
     }
     
-    imshow("result", display);
+    //imshow("result", display); cv::waitKey(0);
 
     return allRegions;
 }

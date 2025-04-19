@@ -16,15 +16,18 @@ struct Region {
     vector<Point> contour;
     //Mat mask;
     Scalar color;
-    vector<Region*> children;
     Point2f circle_center;
     float circle_radius;
     bool is_circle = false;
 };
 
+struct floodedRegion {
+    vector<Point> region;
+    Scalar color;
+};
 
 inline bool isPointInAnyCircle(Point2f pt, const vector<DetectedCircle>& circles);
 inline float deltaE(const Vec3b& a, const Vec3b& b);
-inline Mat floodFillSegmentation(Mat& image);
+inline vector<floodedRegion> floodFillSegmentation(Mat& image);
 inline vector<DetectedCircle> detectCircles(Mat inputImg, const Scalar& clusterColor);
 vector<Region*> fiting(String path);
