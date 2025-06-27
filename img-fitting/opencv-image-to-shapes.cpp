@@ -10,9 +10,18 @@
 
 const int MIN_area = 100; // 最小面积阈值
 const int white = 240; // 白色阈值
-const float COLOR_THRESHOLD = 20.0f; // Lab颜色差异阈值
+const float COLOR_THRESHOLD = 100.0f; // Lab颜色差异阈值
 
+struct DetectedCircle {
+    Point2f center;
+    float radius;
+    Scalar color;
+};
 
+struct floodedRegion {
+    vector<Point> region;
+    Scalar color;
+};
 
 
 // 圆形识别算法
@@ -30,18 +39,11 @@ typedef struct threshold {
 vector<DetectedCircle> detectCircles(Mat inputImg, const Scalar& clusterColor) {
     T test_threshold; // 使用默认阈值
     //cv::imshow("contour", inputImg); cv::waitKey(0);
-    // 预处理图像：转为灰度图并高斯模糊
     Mat testImg;
-    try{
-        //cvtColor(inputImg, testImg, COLOR_BGR2GRAY);
-        testImg = inputImg.clone();
-        GaussianBlur(testImg, testImg, Size(9, 9), 2, 2);
-    }
-    catch (cv::Exception& e) {
-        // 处理 OpenCV 异常
-        std::cerr << "OpenCV Exception occurred: " << e.msg << std::endl;
-        exit(1);
-    }
+    
+    testImg = inputImg.clone();
+    //GaussianBlur(testImg, testImg, Size(3, 3), 2, 2);
+    
     
 
     // EDPF边缘检测
